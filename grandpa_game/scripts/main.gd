@@ -3,6 +3,7 @@ extends Node
 
 const GameScript = preload("res://scripts/game.gd")
 const SfxScript = preload("res://scripts/sfx.gd")
+const ViewScript = preload("res://scripts/view3d.gd")
 
 const DEFAULT_PORT := 7777
 const ADDRESS := "127.0.0.1"
@@ -40,11 +41,13 @@ const BONUS := [
 		"text": "Всё и сразу, да ещё и ночью. Удачи."},
 ]
 
-var game: Node2D
+var game: Node
+var view: Node3D
 var sfx: Node
 var ui: CanvasLayer
 var menu: Control
 var status_label: Label
+var low_check: CheckBox
 var port_edit: LineEdit
 var host_btn: Button
 var join_btn: Button
@@ -70,7 +73,7 @@ var counted_round := -1
 var log_state := false
 var ping_t := 0.0
 var silence_t := 0.0
-const PEER_SILENCE_LIMIT := 4.0
+const PEER_SILENCE_LIMIT := 6.0
 var log_t := 0.0
 
 # Shared input: whichever window is focused samples BOTH key sets and sends them to the host.
@@ -87,7 +90,11 @@ func _ready() -> void:
 	game = GameScript.new()
 	game.sfx = sfx
 	add_child(game)
+	view = ViewScript.new()
+	add_child(view)
+	view.setup(game)
 	game.fx_emitted.connect(_on_game_fx)
+	game.build_map(CHAPTERS[0])  # courtyard shown behind the menu
 	_build_ui()
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
@@ -100,6 +107,8 @@ func _ready() -> void:
 func _handle_cmdline() -> void:
 	var args := OS.get_cmdline_user_args()
 	log_state = "--log-state" in args
+	if "--low" in args:
+		low_check.button_pressed = true
 	for a in args:
 		if a.begins_with("--port="):
 			port_edit.text = a.trim_prefix("--port=")
@@ -160,7 +169,7 @@ func _build_ui() -> void:
 	menu.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui.add_child(menu)
 	var bg := ColorRect.new()
-	bg.color = Color(0.98, 0.78, 0.35)
+	bg.color = Color(0.98, 0.72, 0.3, 0.72)
 	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
 	menu.add_child(bg)
 	var scroll := ScrollContainer.new()
@@ -204,7 +213,9 @@ func _build_ui() -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	col.add_child(row)
-	row.add_child(_label("Адрес: " + ADDRESS + "   Порт:", 20))
+	var addr := _label("Адрес: " + ADDRESS + "   Порт:", 20)
+	addr.autowrap_mode = TextServer.AUTOWRAP_OFF
+	row.add_child(addr)
 	port_edit = LineEdit.new()
 	port_edit.text = str(DEFAULT_PORT)
 	port_edit.custom_minimum_size = Vector2(110, 40)
@@ -221,6 +232,11 @@ func _build_ui() -> void:
 		b.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		btns.add_child(b)
 	cancel_btn.visible = false
+	low_check = CheckBox.new()
+	low_check.text = "Упрощённая графика (для слабых компьютеров)"
+	low_check.add_theme_font_size_override("font_size", 18)
+	low_check.toggled.connect(func(on: bool): view.set_low_quality(on))
+	col.add_child(low_check)
 	status_label = _label("", 20, Color(1, 1, 1))
 	col.add_child(status_label)
 
@@ -310,7 +326,7 @@ func _on_join_pressed() -> void:
 		peer = null
 		return
 	multiplayer.multiplayer_peer = peer
-	connecting_t = CONNECT_TIMEOUT
+	connecting_t = Time.get_ticks_msec() / 1000.0 + CONNECT_TIMEOUT  # real-time deadline
 	_set_menu_busy(true)
 	_place_window(false)
 	get_window().title = "ДЕД, СТОЯТЬ! — ИГРОК 2"
@@ -338,10 +354,11 @@ func _fail_connect() -> void:
 
 func _on_peer_connected(id: int) -> void:
 	print("[NET] peer connected ", id)
-	# Detect a vanished peer within ~3 s instead of ENet's default (up to 30 s).
+	# Detect a vanished peer within ~10 s instead of ENet's default (up to 30 s), while tolerating
+	# the multi-second stall of first-frame 3D shader compilation on slow machines.
 	var pp := peer.get_peer(id) if peer else null
 	if pp:
-		pp.set_timeout(32, 1500, 3000)
+		pp.set_timeout(32, 5000, 10000)
 	if not multiplayer.is_server():
 		return
 	if in_session:
@@ -390,7 +407,7 @@ func _back_to_menu(msg: String) -> void:
 	connecting_t = -1.0
 	game.phase = "idle"
 	game.gp = {}
-	game.build_map({})
+	game.build_map(CHAPTERS[0])
 	results.visible = false
 	results_shown = false
 	menu.visible = true
@@ -425,7 +442,6 @@ func _rpc_start_round(idx: int, guard_host: bool) -> void:
 	if not i_am_host:
 		game.build_map(_chapter_for(idx))
 	game.gp = {}
-	game.particles = []
 	game.bubbles = []
 	menu.visible = false
 	results.visible = false
@@ -549,10 +565,8 @@ func _role_input(seat: int) -> Dictionary:
 
 
 func _physics_process(dt: float) -> void:
-	if connecting_t > 0.0:
-		connecting_t -= dt
-		if connecting_t <= 0.0:
-			_fail_connect()
+	if connecting_t > 0.0 and Time.get_ticks_msec() / 1000.0 > connecting_t:
+		_fail_connect()
 	if not in_session or multiplayer.multiplayer_peer == null:
 		return
 	# Heartbeat: catches a crashed/killed peer even when ENet has not timed out yet.
@@ -700,15 +714,14 @@ func _draw_hud() -> void:
 	var dark := Color(0.1, 0.06, 0.1, 0.85)
 
 	# Off-screen indicators (drawn first so panels stay on top).
-	var xf := hud.get_viewport().get_canvas_transform()
 	var other_pos: Vector2 = game.gd_draw if role == "grandpa" else game.gp_draw
 	var other_label := "ОХРАННИК" if role == "grandpa" else "ДЕД"
 	if role == "guard" and game.gp["state"] == "statue":
 		other_pos = game.last_seen_gp
 		other_label = "ДЕД?"
-	_edge_arrow(xf * other_pos, other_label, Color(1, 0.3, 0.25), vs)
-	_edge_arrow(xf * game.order_zone.get_center(), "ШАУРМА", Color(1, 0.6, 0.1), vs)
-	_edge_arrow(xf * game.entrance_zone.get_center(), "ВХОД", Color(0.35, 0.6, 1), vs)
+	_edge_arrow(view.to_screen(other_pos), other_label, Color(1, 0.3, 0.25), vs)
+	_edge_arrow(view.to_screen(game.order_zone.get_center()), "ШАУРМА", Color(1, 0.6, 0.1), vs)
+	_edge_arrow(view.to_screen(game.entrance_zone.get_center()), "ВХОД", Color(0.35, 0.6, 1), vs)
 
 	# Timer.
 	var tl: float = maxf(0.0, game.time_left)

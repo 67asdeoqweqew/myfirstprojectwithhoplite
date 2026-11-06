@@ -1,17 +1,19 @@
 # ДЕД, СТОЯТЬ! — Grandpa, Get Back Here!
 
-A two-player asymmetric comedy brawl for **Godot 4.4** (GDScript, 2D). Grandpa Semyon has escaped from the
+A two-player asymmetric comedy brawl for **Godot 4.4** (GDScript, **3D**). Grandpa Semyon has escaped from the
 «Закат» retirement home and wants a shawarma. Guard Valera has to drag him back before his shift ends.
 All in-game text is in Russian.
 
 * Real networked multiplayer over **localhost (127.0.0.1)**, using ENet in two separate game windows. The host is authoritative.
-* There is no internet, account, VPN or external server, and no paid or external assets. All art is drawn procedurally and all sounds are synthesized at startup.
+* A cartoon 3D courtyard with real-time sun shadows, a sky, glow, rain and night lighting (lamps, the guard's flashlight). Characters, buildings and props are modeled in code from primitive meshes with cartoon outlines, so there are no external model files.
+* There is no internet, account, VPN or external server, and no paid or external assets. All sounds are synthesized at startup.
 * A six-chapter story ("сага") with a different twist in each chapter (rain, a banana delivery, night, a bench uprising, a grand finale), followed by endless bonus rounds. The overall score is tracked per player and roles swap every round.
 
 ## Requirements
 
 * **Godot 4.4.1** (standard, non-.NET build). This is the version it was built and tested with. Other 4.4.x releases should work.
 * Any OS that Godot supports. Everything runs on one computer with one keyboard.
+* The project uses the **Forward+** renderer (Vulkan/D3D12) for the best look: SSAO, glow and soft shadows. Godot 4.4 automatically falls back to OpenGL (Compatibility) on machines without Vulkan, and the game is also tested there. To force it: `godot --rendering-method gl_compatibility ...`.
 
 ## Run two instances
 
@@ -61,7 +63,7 @@ Keys are read by **physical position**, so they work with a Russian layout too (
 
 * Anyone who steps on a banana peel slips and loses control, including Grandpa (but not on a peel he has just dropped). A Guard who slips drops whatever he carries.
 * Puddles are slippery. Cane hits and slips can send the Guard into obstacles, which counts as a crash.
-* **Statue:** Grandpa freezes in an absurd stone pose, looking exactly like the real statues in the courtyard. On the Guard's screen the off-screen tracker freezes at his last position and shows «ДЕД?». It is not invisibility: the Guard can still grab him.
+* **Statue:** Grandpa turns to stone in an absurd pose, looking exactly like the real statues in the courtyard. On the Guard's screen the off-screen tracker freezes at his last position and shows «ДЕД?». It is not invisibility: the Guard can still grab him.
 * **Esc** leaves to the menu. If the other window disconnects, closes or stops responding for 4 seconds, the game stops and shows a clear message.
 
 ### How simultaneous input works (important)
@@ -82,8 +84,10 @@ No special permissions or OS settings are needed. The only requirement is that o
 grandpa_game/
   project.godot, main.tscn
   scripts/main.gd   menu, ENet networking, shared input, HUD, story chapters, results and rematch
-  scripts/game.gd   courtyard map, authoritative simulation (host), snapshots, rendering, effects
-  scripts/art.gd    procedural cartoon drawing (characters, props, buildings, speech bubbles)
+  scripts/game.gd   courtyard map and rules, authoritative simulation (host), snapshots, effect events
+  scripts/view3d.gd 3D presentation: camera, lights, sky, weather, particles, speech bubbles
+  scripts/chars3d.gd  3D Grandpa and Guard models with procedural animation, statues, banana peels
+  scripts/props3d.gd  3D courtyard: building, kebab stand, hedges, benches, fountain, lamps, trees…
   scripts/sfx.gd    procedural sound effects (bonk, thud, slide-whistle slip, dash, jingles…)
 ```
 
@@ -95,13 +99,16 @@ round starts and rematches are reliable RPCs.
 ### Debug flags (for testing)
 
 * `--log-state` prints a one-line state summary (positions, states, progress, stats, FPS) every second.
+* `--low` turns on simplified graphics at startup, the same as the checkbox on the start screen: no shadows, SSAO or glow, and 60% 3D resolution.
 * `--chapter=N` (host) starts the saga at chapter N, for example `--chapter=4` for the night chapter.
 * `--scenario=grab|cane|dash|slip|bench|statue|order|entrance` is host-side only. It places the characters
   in a test situation and shortens the intro. Everything after that still comes from real keyboard input over the network.
 
 ## Screenshots
 
-Two real instances on one desktop (left: host/Guard, right: client/Grandpa):
+Two real instances on one desktop (left: host, right: client):
 
-![Night chapter, two windows](screenshots/night_two_windows.png)
+![Guard grabs Grandpa](screenshots/grab_two_windows.png)
+![Rain chapter](screenshots/rain_chapter.png)
+![Night chapter, cane hit sends the guard into a bench](screenshots/night_cane_hit.png)
 ![Results and rematch](screenshots/results.png)

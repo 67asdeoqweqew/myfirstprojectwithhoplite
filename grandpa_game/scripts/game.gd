@@ -1,10 +1,10 @@
-extends Node2D
-## Courtyard world. The host runs `host_step` (authoritative simulation) and produces snapshots;
-## the client only applies snapshots. Both sides render the same state and play effect events.
-
-const Art = preload("res://scripts/art.gd")
+extends Node
+## Courtyard rules. The host runs `host_step` (authoritative simulation) and produces snapshots;
+## the client only applies snapshots. Rendering lives in view3d.gd, which reads this state.
 
 signal fx_emitted(d: Dictionary)
+signal map_built
+signal burst(pos: Vector2, color: Color, count: int, strong: bool)
 
 const WORLD := Rect2(0, 0, 1800, 1100)
 const ROUND_TIME := 180.0
@@ -64,41 +64,13 @@ var local_role := "guard"
 var is_host := false
 var anim_t := 0.0
 var shake := 0.0
-var particles: Array = []
 var bubbles: Array = []      # {who, text, t}
 var gp_draw := Vector2.ZERO
 var gd_draw := Vector2.ZERO
 var last_seen_gp := Vector2.ZERO  # guard's tracker freezes while grandpa plays statue
-var camera: Camera2D
-var fx_layer: CanvasLayer
-var fx_node: Node2D
-var night_nodes: Array = []
 var sfx: Node
-var ground_layer: Node2D
 
 
-func _ready() -> void:
-	# Static ground/paths are recorded once per map instead of every frame.
-	ground_layer = Node2D.new()
-	ground_layer.show_behind_parent = true
-	ground_layer.draw.connect(_draw_ground_layer)
-	add_child(ground_layer)
-	camera = Camera2D.new()
-	camera.position_smoothing_enabled = true
-	camera.position_smoothing_speed = 9.0
-	camera.limit_left = -200
-	camera.limit_top = -200
-	camera.limit_right = int(WORLD.size.x) + 200
-	camera.limit_bottom = int(WORLD.size.y) + 200
-	add_child(camera)
-	# Captions and particles live on a layer that follows the camera but ignores night darkness.
-	fx_layer = CanvasLayer.new()
-	fx_layer.layer = 1
-	fx_layer.follow_viewport_enabled = true
-	add_child(fx_layer)
-	fx_node = Node2D.new()
-	fx_node.draw.connect(_draw_fx)
-	fx_layer.add_child(fx_node)
 
 
 # ------------------------------------------------------------------ map
@@ -135,56 +107,15 @@ func build_map(ch: Dictionary) -> void:
 	solid_rects.append([cart, "cart"])
 	for s in statues:
 		solid_rects.append([_pedestal(s[0]), "statue"])
-	_setup_night(ch.get("night", false))
-	if ground_layer:
-		ground_layer.queue_redraw()
+	map_built.emit()
 
 
-func _draw_ground_layer() -> void:
-	if walls.is_empty():
-		return
-	Art.draw_ground(ground_layer, WORLD, 0.0)
-	for pa in paths:
-		Art.draw_path(ground_layer, pa[0], pa[1], 64.0)
 
 
 func _pedestal(p: Vector2) -> Rect2:
 	return Rect2(p.x - 22, p.y - 15, 44, 30)
 
 
-func _setup_night(on: bool) -> void:
-	for n in night_nodes:
-		n.queue_free()
-	night_nodes = []
-	if not on:
-		return
-	var cm := CanvasModulate.new()
-	cm.color = Color(0.2, 0.22, 0.42)
-	add_child(cm)
-	night_nodes.append(cm)
-	var grad := Gradient.new()
-	grad.set_color(0, Color(1, 1, 1, 1))
-	grad.set_color(1, Color(1, 1, 1, 0))
-	var tex := GradientTexture2D.new()
-	tex.gradient = grad
-	tex.width = 256
-	tex.height = 256
-	tex.fill = GradientTexture2D.FILL_RADIAL
-	tex.fill_from = Vector2(0.5, 0.5)
-	tex.fill_to = Vector2(0.5, 0.0)
-	var spots := [["gp", Vector2.ZERO, 2.2, Color(1, 0.95, 0.8)], ["gd", Vector2.ZERO, 2.6, Color(0.85, 0.9, 1.0)],
-		["", entrance_zone.get_center(), 2.2, Color(0.7, 0.8, 1)], ["", stand.get_center() + Vector2(-60, 0), 3.0, Color(1, 0.75, 0.4)],
-		["", fountain[0], 1.8, Color(0.6, 0.9, 1)]]
-	for s in spots:
-		var l := PointLight2D.new()
-		l.texture = tex
-		l.texture_scale = s[2]
-		l.color = s[3]
-		l.energy = 0.7
-		l.position = s[1]
-		l.set_meta("follow", s[0])
-		add_child(l)
-		night_nodes.append(l)
 
 
 # ------------------------------------------------------------------ round setup (host)
@@ -771,12 +702,7 @@ func apply_fx(d: Dictionary) -> void:
 	if d.has("shake"):
 		shake = maxf(shake, d["shake"])
 	if d.has("n") and d.has("pos"):
-		var col: Color = d.get("color", Color.WHITE)
-		for i in int(d["n"]):
-			var a := randf() * TAU
-			var sp := randf_range(80.0, 340.0)
-			particles.append({"p": d["pos"], "v": Vector2(cos(a), sin(a)) * sp, "life": randf_range(0.35, 0.8),
-				"max": 0.8, "c": col, "s": randf_range(3.0, 7.0)})
+		burst.emit(d["pos"], d.get("color", Color.WHITE), int(d["n"]), d.get("shake", 0.0) >= 8.0)
 	if d.has("text") and d.has("who"):
 		for b in bubbles:
 			if b["who"] == d["who"]:
@@ -845,130 +771,7 @@ func _process(dt: float) -> void:
 	gd_draw = gd_draw.lerp(gd["pos"], k) if gd_draw.distance_to(gd["pos"]) < 200.0 else gd["pos"]
 	if gp["state"] != "statue":
 		last_seen_gp = gp_draw
-	camera.position = local_draw_pos()
 	shake = maxf(0.0, shake - dt * 30.0)
-	camera.offset = Vector2(randf_range(-1, 1), randf_range(-1, 1)) * shake
-	for p in particles:
-		p["p"] += p["v"] * dt
-		p["v"] *= 0.9
-		p["life"] -= dt
-	particles = particles.filter(func(p): return p["life"] > 0.0)
 	for b in bubbles:
 		b["t"] -= dt
 	bubbles = bubbles.filter(func(b): return b["t"] > 0.0)
-	for n in night_nodes:
-		if n is PointLight2D:
-			var f: String = n.get_meta("follow")
-			if f == "gp":
-				n.position = gp_draw
-			elif f == "gd":
-				n.position = gd_draw
-	queue_redraw()
-	fx_node.queue_redraw()
-
-
-func _draw() -> void:
-	if gp.is_empty():
-		return
-	var t := anim_t
-	for pu in puddles:
-		Art.draw_puddle(self, pu[0], pu[1], t)
-	Art.draw_entrance_zone(self, entrance_zone, entrance_progress, t)
-	Art.draw_order_zone(self, order_zone, order_progress, t)
-	for n in bananas:
-		Art.draw_banana(self, n["p"], n["rot"])
-	# Y-sorted drawables.
-	var items: Array = []
-	for r in walls:
-		items.append([r.end.y, "wall", r])
-	for r in hedges:
-		items.append([r.end.y, "hedge", r])
-	for b in bushes:
-		items.append([b[0].y + b[1] * 0.5, "bush", b])
-	for s in statues:
-		items.append([s[0].y + 15.0, "statue", s])
-	for b in benches:
-		if not b["carried"]:
-			items.append([b["r"].end.y, "bench", b["r"]])
-	items.append([fountain[0].y + fountain[1] * 0.6, "fountain", fountain])
-	items.append([building.end.y, "building", building])
-	items.append([stand.end.y, "stand", stand])
-	items.append([cart.end.y, "cart", cart])
-	items.append([gd_draw.y, "guard", null])
-	if gd["carry"] != "grandpa":
-		items.append([gp_draw.y, "grandpa", null])
-	items.sort_custom(func(a, b): return a[0] < b[0])
-	for it in items:
-		match it[1]:
-			"wall":
-				Art.draw_wall(self, it[2])
-			"hedge":
-				Art.draw_hedge(self, it[2], t)
-			"bush":
-				Art.draw_bush(self, it[2][0], it[2][1], t)
-			"statue":
-				Art.draw_statue(self, it[2][0], it[2][1])
-			"bench":
-				Art.draw_bench(self, it[2], false)
-			"fountain":
-				Art.draw_fountain(self, it[2][0], it[2][1], t)
-			"building":
-				Art.draw_building(self, building, door, t)
-			"stand":
-				Art.draw_kebab_stand(self, stand, t)
-			"cart":
-				Art.draw_banana_cart(self, cart.get_center(), t)
-				for i in cart_stock:
-					Art.draw_banana(self, cart.position + Vector2(14 + i * 20, -6), 0.4 * i)
-			"guard":
-				_draw_guard_with_cargo(t)
-			"grandpa":
-				_draw_grandpa_at(gp_draw, t)
-
-
-func _draw_guard_with_cargo(t: float) -> void:
-	var st: String = gd["state"]
-	Art.draw_guard(self, gd_draw, {"facing": gd["facing"], "vel": gd["vel"], "t": t, "state": st,
-		"carry": gd["carry"], "ghost": false})
-	if gd["state"] == "stun":
-		Art.draw_stars(self, gd_draw + Vector2(0, -70), t)
-	if gd["carry"] == "grandpa":
-		_draw_grandpa_at(gd_draw + gd["facing"] * 10.0 + Vector2(0, -34), t)
-	elif gd["carry"] == "bench":
-		var i: int = gd["bench"]
-		if i >= 0 and i < benches.size():
-			var r: Rect2 = benches[i]["r"]
-			var size := Vector2(130, 40)
-			Art.draw_bench(self, Rect2(gd_draw + Vector2(-size.x * 0.5, -88), size), true)
-
-
-func _draw_grandpa_at(p: Vector2, t: float) -> void:
-	var statue: bool = gp["state"] == "statue"
-	var mine := local_role == "grandpa"
-	Art.draw_grandpa(self, p, {"facing": gp["facing"], "vel": gp["vel"], "t": t, "state": gp["state"],
-		"pose": gp["pose"], "stone": statue, "ghost": statue and mine, "has_banana": gp["has_banana"],
-		"swing": gp["swing"]})
-	if gp["state"] == "stun" or gp["state"] == "knocked":
-		Art.draw_stars(self, p + Vector2(0, -50), t)
-
-
-func _draw_fx() -> void:
-	if gp.is_empty():
-		return
-	for p in particles:
-		var a: float = clampf(p["life"] / p["max"], 0.0, 1.0)
-		var c: Color = p["c"]
-		c.a = a
-		fx_node.draw_circle(p["p"], p["s"] * (0.5 + a), c)
-	for b in bubbles:
-		var anchor := (gp_draw + Vector2(0, -58)) if b["who"] == "gp" else (gd_draw + Vector2(0, -84))
-		if gd["carry"] == "grandpa":
-			# Both heads are stacked during a grab: split the bubbles sideways.
-			anchor += Vector2(80, -40) if b["who"] == "gp" else Vector2(-80, 0)
-		Art.draw_bubble(fx_node, anchor, b["text"], 18, clampf(b["t"] * 3.0, 0.0, 1.0))
-	# Escape meter above a carried grandpa, visible to both players.
-	if gp["state"] == "grabbed":
-		var c2 := gd_draw + Vector2(0, -120)
-		fx_node.draw_rect(Rect2(c2 + Vector2(-50, 0), Vector2(100, 14)), Color(0.1, 0.05, 0.1), true)
-		fx_node.draw_rect(Rect2(c2 + Vector2(-48, 2), Vector2(96.0 * gp["escape"], 10)), Color(1, 0.4, 0.3), true)
-		fx_node.draw_string(ThemeDB.fallback_font, c2 + Vector2(-50, -4), "ВЫРЫВАЕТСЯ!", HORIZONTAL_ALIGNMENT_CENTER, 100, 14, Color.WHITE)
