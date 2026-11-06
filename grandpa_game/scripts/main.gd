@@ -8,6 +8,9 @@ const ViewScript = preload("res://scripts/view3d.gd")
 const DEFAULT_PORT := 7777
 const ADDRESS := "127.0.0.1"
 const CONNECT_TIMEOUT := 6.0
+# The first launch on a new GPU can freeze both windows for many seconds while shaders compile,
+# so a join keeps retrying for this long before reporting failure.
+const JOIN_RETRY_WINDOW := 30.0
 
 # Physical keys, so the controls work with any keyboard layout (including Russian).
 const SEATS := [
@@ -61,6 +64,7 @@ var rematch_info: Label
 
 var peer: ENetMultiplayerPeer
 var connecting_t := -1.0
+var join_started := -1.0
 var in_session := false
 var round_idx := 0
 var guard_is_host := true
@@ -318,7 +322,18 @@ func _on_host_pressed() -> void:
 	print("[NET] hosting on %s:%d" % [ADDRESS, _port()])
 
 
+func _now() -> float:
+	return Time.get_ticks_msec() / 1000.0
+
+
 func _on_join_pressed() -> void:
+	join_started = _now()
+	_place_window(false)
+	get_window().title = "ДЕД, СТОЯТЬ! — ИГРОК 2"
+	_start_client()
+
+
+func _start_client() -> void:
 	peer = ENetMultiplayerPeer.new()
 	var err := peer.create_client(ADDRESS, _port())
 	if err != OK:
@@ -326,16 +341,15 @@ func _on_join_pressed() -> void:
 		peer = null
 		return
 	multiplayer.multiplayer_peer = peer
-	connecting_t = Time.get_ticks_msec() / 1000.0 + CONNECT_TIMEOUT  # real-time deadline
+	connecting_t = _now() + CONNECT_TIMEOUT  # real-time deadline
 	_set_menu_busy(true)
-	_place_window(false)
-	get_window().title = "ДЕД, СТОЯТЬ! — ИГРОК 2"
 	_set_status("Подключаемся к %s:%d…" % [ADDRESS, _port()], Color(1, 1, 0.6))
 	print("[NET] joining %s:%d" % [ADDRESS, _port()])
 
 
 func _on_connected_to_server() -> void:
 	connecting_t = -1.0
+	join_started = -1.0
 	_set_status("Подключено! Ждём начала раунда…", Color(0.6, 1, 0.6))
 	print("[NET] connected to server")
 
@@ -347,6 +361,14 @@ func _on_connection_failed() -> void:
 func _fail_connect() -> void:
 	connecting_t = -1.0
 	_close_peer()
+	if join_started >= 0.0 and _now() - join_started < JOIN_RETRY_WINDOW:
+		_set_status("Хост пока не отвечает, пробуем ещё раз… (%d с)" % int(JOIN_RETRY_WINDOW - (_now() - join_started)), Color(1, 1, 0.6))
+		print("[NET] retrying join")
+		get_tree().create_timer(1.0).timeout.connect(func():
+			if join_started >= 0.0 and multiplayer.multiplayer_peer == null:
+				_start_client())
+		return
+	join_started = -1.0
 	_set_menu_busy(false)
 	_set_status("Не удалось подключиться к %s:%d. Сначала создайте игру в другом окне (тот же порт)." % [ADDRESS, _port()], Color(1, 0.3, 0.3))
 	print("[NET] connection failed")
@@ -405,6 +427,7 @@ func _back_to_menu(msg: String) -> void:
 	_close_peer()
 	in_session = false
 	connecting_t = -1.0
+	join_started = -1.0
 	game.phase = "idle"
 	game.gp = {}
 	game.build_map(CHAPTERS[0])
@@ -565,7 +588,7 @@ func _role_input(seat: int) -> Dictionary:
 
 
 func _physics_process(dt: float) -> void:
-	if connecting_t > 0.0 and Time.get_ticks_msec() / 1000.0 > connecting_t:
+	if connecting_t > 0.0 and _now() > connecting_t:
 		_fail_connect()
 	if not in_session or multiplayer.multiplayer_peer == null:
 		return

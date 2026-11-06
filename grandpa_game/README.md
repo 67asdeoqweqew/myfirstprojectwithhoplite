@@ -34,7 +34,9 @@ godot --path grandpa_game -- --host      # window 1: Player 1 (host)
 godot --path grandpa_game -- --join      # window 2: Player 2
 ```
 
-Without `--host` or `--join` you get the start screen with buttons. `--port=7778` changes the port; both windows
+On Linux and macOS, `./play.sh` in the repository root starts both windows. Extra arguments go to both windows, for example `./play.sh --low`.
+
+The very first launch on a machine can take a while as the GPU compiles shaders, so the joining window keeps retrying for up to 30 seconds. Without `--host` or `--join` you get the start screen with buttons. `--port=7778` changes the port; both windows
 must use the same one. The default port is 7777, and the host binds only to 127.0.0.1. On connect, the windows
 arrange themselves on the left and right halves of the screen.
 
